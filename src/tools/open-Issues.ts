@@ -161,51 +161,31 @@ export function registerOpenIssuesTools(server: McpServer) {
       }
     );
 
-    // Tool 5: Konkretes Attachment herunterladen (als MCP-Resource zurückgeben)
+    // Tool 6: Konkretes Attachment über issues/:issue/attachments/:attachment herunterladen
     server.registerTool(
-      "ec_issue_attachment_download",
+      "ec_issue_attachment_get",
       {
-        title: "EquipmentCloud: Issue-Attachment herunterladen",
+        title: "EquipmentCloud: Issue-Attachment (direkter Pfad) herunterladen",
         description:
-          "Lädt eine Datei eines Issues herunter und gibt sie als 'resource' (Base64-Blob + mimeType) zurück. Entweder issue+attachment_ident angeben (Standardpfad) oder eine vollständige URL übergeben.",
+          "Lädt eine Datei über /openissues/v1/issues/:issue/attachments/:attachment. Mit 'mode' steuerst du die Ausgabe: 'file' (lokal speichern, Pfad zurückgeben), 'uri' (nur Link), 'inline' (data:-URI).",
         inputSchema: {
-          issue: z.number().int().positive().optional().describe("Issue-ID (ident) – erforderlich, wenn keine URL angegeben ist"),
-          attachment_ident: z.number().int().positive().optional().describe("Attachment-ID (ident) – erforderlich mit 'issue', wenn keine URL angegeben ist"),
-          url: z.string().min(1).optional().describe("Optional direkte Download-URL, wenn der Endpunkt abweicht"),
+          issue: z.number().int().positive().describe("Issue-ID (ident)"),
+          attachment: z.number().int().positive().describe("Attachment-ID (ident)"),
+          max_inline_size: z.number().int().positive().optional().describe("Maximale Inline-Größe in Bytes (Default 10 MB)"),
+          mode: z.enum(["file", "uri", "inline"]).optional().describe("Ausgabemodus: file (Default) | uri | inline"),
+          // optional: Zielordner fürs Speichern bei mode=file
+          save_dir: z.string().optional().describe("Zielordner; Default ist OS-Temp"),
         },
       },
-      async ({ issue, attachment_ident, url }, _extra) => {
+      async ({ issue, attachment, max_inline_size, mode = "file", save_dir }, _extra) => {
         const missing = ensureConfig();
         if (missing.length) {
           return { content: asTextContent({ error: "Konfiguration unvollständig", missing }), isError: true };
         }
 
-        // Eingaben prüfen: entweder URL ODER (issue + attachment_ident)
-        let target: string | null = null;
         const base = EC_CLOUD_BASE_URL.replace(/\/+$/, "");
+        const target = `${base}/openissues/v1/issues/${issue}/attachments/${attachment}`;
 
-        if (url) {
-          // direkter Ziel-URL (z. B. wenn euer Endpunkt anders heißt)
-          try {
-            target = new URL(url, base).toString();
-          } catch {
-            return { content: asTextContent({ error: "Ungültige URL", url }), isError: true };
-          }
-        } else {
-          if (!issue || !attachment_ident) {
-            return {
-              content: asTextContent({
-                error: "Eingaben unvollständig",
-                hint: "Entweder 'url' angeben ODER 'issue' UND 'attachment_ident'.",
-              }),
-              isError: true,
-            };
-          }
-          // Standard-Downloadpfad (übliches Schema – falls bei euch anders, bitte 'url' verwenden)
-          target = `${base}/openissues/v1/issues/${issue}/attachments/${attachment_ident}`;
-        }
-
-        // Jetzt den Binary-Download machen
         try {
           const res = await fetch(target, {
             headers: {
@@ -216,11 +196,9 @@ export function registerOpenIssuesTools(server: McpServer) {
             signal: _extra.signal,
           });
 
-          // Bestmögliche Fehlerdiagnose
           if (!res.ok) {
-            // Manche Server liefern JSON-Fehler – versuchen zu parsen
             let api: any = null;
-            try { api = await res.clone().json(); } catch { /* binary oder kein JSON */ }
+            try { api = await res.clone().json(); } catch {}
             return {
               content: asTextContent({
                 error: "HTTP (download)",
@@ -233,49 +211,275 @@ export function registerOpenIssuesTools(server: McpServer) {
             };
           }
 
-          // Binary → Base64
-          const buf = Buffer.from(await res.arrayBuffer());
-          const b64 = buf.toString("base64");
           const mime = res.headers.get("content-type") ?? "application/octet-stream";
+          const cd = res.headers.get("content-disposition") ?? "";
+          const sizeHeader = res.headers.get("content-length");
+          const sizeFromHeader = sizeHeader ? Number(sizeHeader) : undefined;
 
-          // Dateiname aus Header (falls vorhanden) extrahieren
-          let fileName = undefined as string | undefined;
-          const cd = res.headers.get("content-disposition");
-          if (cd) {
+          let fileName: string | undefined;
+          {
             const m = /filename\*?=(?:UTF-8'')?("?)([^";]+)\1/i.exec(cd);
             if (m) fileName = decodeURIComponent(m[2]);
           }
+          if (!fileName) {
+            // Fallback-Dateiname
+            const ext = mime.split("/")[1]?.split(";")[0] ?? "bin";
+            fileName = `issue_${issue}_att_${attachment}.${ext}`;
+          }
 
-          // MCP-Resource zurückgeben (blob + mimeType). URI zur Info dabei lassen.
-          return {
-            content: [
-              {
-                type: "resource",
-                resource: {
-                  uri: target,
-                  blob: b64,
-                  mimeType: mime,
-                  ...(fileName ? { text: fileName } : {}), // 'text' kann als Label/Name dienen
-                },
-              },
-              // Zusätzlich eine Text-Zusammenfassung (hilfreich in UIs ohne Resource-Viewer)
-              {
-                type: "text",
-                text:
-                  JSON.stringify(
-                    { url: target, mimeType: mime, size_bytes: buf.length, file_name: fileName ?? null },
+          // --- Modus "uri": nur Link zurückgeben
+          if (mode === "uri") {
+            return {
+              content: asTextContent({
+                mode,
+                url: target,
+                file_name: fileName,
+                mimeType: mime,
+                size_bytes: sizeFromHeader ?? null,
+                note: "Nur Link ausgegeben (kein Blob, keine Datei gespeichert).",
+              }),
+            };
+          }
+
+          // Datei laden
+          const buf = Buffer.from(await res.arrayBuffer());
+
+          // --- Modus "inline": data:-URI zurückgeben (ohne window.fs)
+          if (mode === "inline") {
+            const limit = max_inline_size ?? 10 * 1024 * 1024;
+            if (buf.length > limit) {
+              return {
+                content: asTextContent({
+                  error: "Zu groß für inline",
+                  size_bytes: buf.length,
+                  limit,
+                  hint: "Nutze mode='file' oder mode='uri'.",
+                }),
+                isError: true,
+              };
+            }
+            const b64 = buf.toString("base64");
+            const dataUri = `data:${mime};base64,${b64}`;
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: JSON.stringify(
+                    { mode, file_name: fileName, mimeType: mime, size_bytes: buf.length },
                     null,
                     2
                   ),
-              },
-            ],
+                },
+                {
+                  type: "resource",
+                  resource: {
+                    uri: dataUri,
+                    mimeType: mime,
+                    text: fileName,
+                  },
+                },
+              ],
+            };
+          }
+
+          // --- Default: "file" → lokal speichern und Pfad zurückgeben
+          const os = await import("node:os");
+          const path = await import("node:path");
+          const fs = await import("node:fs/promises");
+
+          const safe = fileName.replace(/[\\/:*?"<>|]/g, "_");
+          const dir = save_dir && save_dir.trim().length ? save_dir : path.join(os.tmpdir(), "mcp-eqc");
+          await fs.mkdir(dir, { recursive: true });
+          const fullPath = path.join(dir, safe);
+          await fs.writeFile(fullPath, buf);
+
+          return {
+            content: asTextContent({
+              mode: "file",
+              saved_to: fullPath,
+              file_name: fileName,
+              mimeType: mime,
+              size_bytes: buf.length,
+              note: "Datei wurde lokal vom MCP-Server gespeichert. In Claude kann der Pfad manuell geöffnet werden.",
+            }),
           };
         } catch (e: any) {
+          return { content: asTextContent({ error: "Download-Fehler", message: String(e), url: target }), isError: true };
+        }
+      }
+    );
+
+    // Tool 6: Diskussionseinträge eines Issues laden
+    server.registerTool(
+      "ec_issue_discussion",
+      {
+        title: "EquipmentCloud: Issue-Diskussion laden",
+        description:
+          "Lädt die Diskussionseinträge eines Issues über /openissues/v1/issues/:issue/discussion.",
+        inputSchema: {
+          issue: z.number().int().positive().describe("Issue-ID (ident), z. B. 55"),
+          // optional: welches Textfeld bevorzugen (nur zur Info im Output)
+          prefer: z
+            .enum(["comment_value", "comment_value_simple_html", "comment_value_complete"])
+            .optional()
+            .describe("Bevorzugtes Textfeld (nur Hinweis im Output)"),
+          // optional: Anzahl Einträge begrenzen (clientseitig)
+          limit: z.number().int().positive().max(500).optional().describe("Max. Anzahl zurückgegebener Einträge"),
+        },
+      },
+      async ({ issue, prefer = "comment_value", limit }, _extra) => {
+        const missing = ensureConfig();
+        if (missing.length) {
           return {
-            content: asTextContent({ error: "Download-Fehler", message: String(e), url: target }),
+            content: asTextContent({ error: "Konfiguration unvollständig", missing }),
             isError: true,
           };
         }
+
+        const base = EC_CLOUD_BASE_URL.replace(/\/+$/, "");
+        const url = `${base}/openissues/v1/issues/${issue}/discussion`;
+
+        const r = await fetchJson(url, { signal: _extra.signal });
+        if (!r.ok) {
+          return {
+            content: asTextContent({
+              error: "HTTP",
+              status: r.status,
+              statusText: r.statusText,
+              api: r.data,
+            }),
+            isError: true,
+          };
+        }
+
+        const items: any[] = Array.isArray(r.data?.items) ? r.data.items : [];
+
+        // schlanke Projektion + optional limit
+        const mapped = items.map((d) => ({
+          ident: d?.ident,
+          visibility_level: d?.visibility_level ?? null,
+          app_user: d?.app_user ?? null,
+          created_on: d?.created_on ?? null,
+          updated_on: d?.updated_on ?? null,
+          // alle drei Varianten mitgeben, damit der Client (Claude) wählen kann:
+          comment_value: d?.comment_value ?? null,
+          comment_value_simple_html: d?.comment_value_simple_html ?? null,
+          comment_value_complete: d?.comment_value_complete ?? null,
+          attachments_idents: Array.isArray(d?.attachments_idents) ? d.attachments_idents : [],
+        }));
+
+        const out = typeof limit === "number" ? mapped.slice(0, limit) : mapped;
+
+        return {
+          content: asTextContent({
+            issue,
+            prefer,            // Info, welches Feld der Aufrufer bevorzugt
+            total_found: mapped.length,
+            returned: out.length,
+            items: out,
+            note:
+              "Felder: 'comment_value' (Plain), 'comment_value_simple_html' (~3900 Zeichen, HTML), 'comment_value_complete' (vollständig, HTML).",
+          }),
+        };
+      }
+    );
+
+    // Tool 7: Historie eines Issues laden
+    server.registerTool(
+      "ec_issue_history",
+      {
+        title: "EquipmentCloud: Issue-Historie laden",
+        description:
+          "Lädt die Änderungshistorie eines Issues über /openissues/v1/issues/:issue/history.",
+        inputSchema: {
+          issue: z.number().int().positive().describe("Issue-ID (ident), z. B. 55"),
+          // optional: nur bestimmte Spaltennamen zurückgeben (serverseitig liefert alles; wir filtern clientseitig)
+          columns: z
+            .array(
+              z.enum([
+                "ATTACHMENT",
+                "CATEGORY",
+                "COMPLETENESS",
+                "CURRENT_WORK",
+                "DESCRIPTION",
+                "DETECTED_ON",
+                "DOMAIN_ATTRIBUTE_LEVEL",
+                "DUE_DATE",
+                "LINK",
+                "MAPPED_TO",
+                "PLANNED_WORK",
+                "PRIORITY",
+                "RESPONSIBLE",
+                "STATUS",
+                "TITLE",
+              ])
+            )
+            .optional()
+            .describe("Optional: Liste von Feldnamen zum Filtern, z. B. [\"STATUS\",\"PRIORITY\"]"),
+          // optional: Anzahl Einträge begrenzen (nach Sortierung)
+          limit: z.number().int().positive().max(1000).optional().describe("Max. Einträge (Default: alle)"),
+          // optional: Sortierung; Default: updated_on DESC
+          sort: z
+            .enum(["updated_on_asc", "updated_on_desc"])
+            .optional()
+            .describe("Sortierung der Ergebnisse (Default: updated_on_desc)"),
+        },
+      },
+      async ({ issue, columns, limit, sort = "updated_on_desc" }, _extra) => {
+        const missing = ensureConfig();
+        if (missing.length) {
+          return { content: asTextContent({ error: "Konfiguration unvollständig", missing }), isError: true };
+        }
+
+        const base = EC_CLOUD_BASE_URL.replace(/\/+$/, "");
+        const url = `${base}/openissues/v1/issues/${issue}/history`;
+
+        const r = await fetchJson(url, { signal: _extra.signal });
+        if (!r.ok) {
+          return {
+            content: asTextContent({ error: "HTTP", status: r.status, statusText: r.statusText, api: r.data }),
+            isError: true,
+          };
+        }
+
+        const items: any[] = Array.isArray(r.data?.items) ? r.data.items : [];
+
+        // optional: Spalten-Filter anwenden
+        let filtered = Array.isArray(columns) && columns.length
+          ? items.filter((h) => columns.includes(h?.column_name))
+          : items;
+
+        // Sortierung
+        filtered = filtered.sort((a, b) => {
+          const ta = Date.parse(a?.updated_on ?? 0);
+          const tb = Date.parse(b?.updated_on ?? 0);
+          return sort === "updated_on_asc" ? ta - tb : tb - ta;
+        });
+
+        // optionale Begrenzung
+        const out = typeof limit === "number" ? filtered.slice(0, limit) : filtered;
+
+        // schlanke Projektion der Felder, wie in der Doku
+        const mapped = out.map((h) => ({
+          updated_on: h?.updated_on ?? null,
+          updated_by: h?.updated_by ?? null,
+          update_substantiation: h?.update_substantiation ?? null,
+          column_name: h?.column_name ?? null,
+          old_value: h?.old_value ?? null,
+          new_value: h?.new_value ?? null,
+        }));
+
+        return {
+          content: asTextContent({
+            issue,
+            total_found: items.length,
+            filtered_count: filtered.length,
+            returned: mapped.length,
+            sort,
+            columns: columns ?? null,
+            items: mapped,
+          }),
+        };
       }
     );
 
