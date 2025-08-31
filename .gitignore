@@ -1,2 +1,5 @@
 node_modules
-build
+build/git rm -r --cached build
+*.dxt
+*.mcpbgit rm --cached mcp.dxt
+.DS_Store
