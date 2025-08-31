@@ -31,8 +31,9 @@ Sie kann mit **Claude Desktop**, dem **Inspector** oder anderen MCP-Hosts verwen
 - Install dxt packager using: 
 ```bash
 npm install -g @anthropic/dxt
+```
 
-### Schritte
+### Weitere Schritte
 ```bash
 # 1. Abhängigkeiten installieren
 npm install
