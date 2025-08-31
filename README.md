@@ -28,6 +28,9 @@ Sie kann mit **Claude Desktop**, dem **Inspector** oder anderen MCP-Hosts verwen
 - Node.js ≥ 18
 - npm (oder yarn/pnpm)
 - TypeScript
+- Install dxt packager using: 
+```bash
+npm install -g @anthropic/dxt
 
 ### Schritte
 ```bash
