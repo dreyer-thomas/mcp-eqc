@@ -1,0 +1,22 @@
+{
+  "name": "mcp-eqc",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx src/server.ts",
+    "build": "tsc -p .",
+    "start": "node dist/server.js",
+    "inspect": "npx @modelcontextprotocol/inspector node build/server.js",
+    "pack": "dxt pack"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/inspector": "^0.16.5",
+    "@types/node": "^24.3.0",
+    "tsx": "^4.20.4",
+    "typescript": "^5.9.2"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.17.4",
+    "zod": "^3.25.76"
+  }
+}

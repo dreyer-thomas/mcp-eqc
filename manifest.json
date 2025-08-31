@@ -1,0 +1,55 @@
+{
+  "dxt_version": "0.1",
+  "name": "mcp-eqc",
+  "display_name": "EquipmentCloud API MCP",
+  "version": "0.3.0",
+  "description": "Benutzt die EquipmentCloud REST API, um Daten abzufragen.",
+  "author": {
+    "name": "Thomas Dreyer",
+    "email": "thomas.dreyer@kontron-ais.com"
+  },
+  "server": {
+    "type": "node",
+    "entry_point": "build/server.js",
+    "mcp_config": {
+      "command": "node",
+      "args": ["${__dirname}/build/server.js"],
+      "env": {
+        "EC_CLOUD_BASE_URL": "${user_config.ec_cloud_base_url}",
+        "EC_USER": "${user_config.ec_user}",
+        "EC_PASS": "${user_config.ec_pass}",
+        "EC_LANG": "${user_config.ec_lang}"
+      }
+    }
+  },
+  "user_config": {
+    "ec_cloud_base_url": {
+      "type": "string",
+      "title": "EquipmentCloud API-Basis-URL",
+      "default": "https://eqcloud.kontron-ais.com/C1681906/cloudconnect/api",
+      "description": "Basis-URL deiner CloudConnect-API, z. B. https://eqcloud.kontron-ais.com/<Mandant>/cloudconnect/api",      
+      "required": true
+    },
+    "ec_user": {
+      "type": "string",
+      "title": "EquipmentCloud Benutzer",
+      "description": "Dein EquipmentCloud-Benutzer (E-Mail/Loginname) für Basic Authentication.",
+      "required": true,
+      "sensitive": true
+    },
+    "ec_pass": {
+      "type": "string",
+      "title": "EquipmentCloud Passwort",
+      "description": "Passwort zum Benutzerkonto für Basic Authentication.",
+      "required": true,
+      "sensitive": true
+    },
+    "ec_lang": {
+      "type": "string",
+      "title": "Sprache",
+      "default": "de-de",
+      "description": "Sprache für Übersetzungen (Header „lang“), z. B. de-de, en oder user_language.",
+      "required": false
+    }
+  }
+}
