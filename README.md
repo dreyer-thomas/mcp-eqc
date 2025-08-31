@@ -36,3 +36,8 @@ npm install
 
 # 2. TypeScript build
 npm run build
+
+# 3. Binary Package for Claude
+npm run pack
+
+# 4. Install Package in Claude Desktop App as Extension (Settings - Extensions)
