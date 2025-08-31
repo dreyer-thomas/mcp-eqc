@@ -5,7 +5,7 @@ Sie kann mit **Claude Desktop**, dem **Inspector** oder anderen MCP-Hosts verwen
 
 ---
 
-## ✨ Features
+## Features
 
 - **Open Issues**
   - `ec_open_issues` – offene Issues einer Hierarchie abrufen
@@ -22,7 +22,7 @@ Sie kann mit **Claude Desktop**, dem **Inspector** oder anderen MCP-Hosts verwen
 
 ---
 
-## 🛠️ Installation & Build
+## Installation & Build
 
 ### Voraussetzungen
 - Node.js ≥ 18
